@@ -5,7 +5,7 @@
 <img width="1804" height="815" alt="image" src="https://github.com/user-attachments/assets/4bf6f5b1-b67d-4df6-9690-f99367fef473" />
 <p align="center">
   <img src="https://img.shields.io/badge/license-GPL--2.0-orange">
-  <img src="https://img.shields.io/badge/version-v2.0.0-green">
+  <img src="https://img.shields.io/badge/version-v2.1.0-green">
   <img src="https://img.shields.io/badge/Docker-Build-blue?logo=docker">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg">
   <img src="https://img.shields.io/badge/vue-3.x-brightgreen.svg">
@@ -40,6 +40,7 @@
 * **マルチエージェント協調**: 天気予報士やホテル推薦専門家など、異なる役割のエージェントを用いて、協力なワークフロー (Workflow) を通じて複雑な旅行計画タスクを共同で達成します。
 * **ナレッジグラフの可視化**: 生成された旅程データをリアルタイムでノードとリレーションシップのグラフに変換し、「都市 - 日数 - 旅程ノード - 予算」の空間構造を直感的に表示します。
 * **没入型 AI Q&A コンパニオン**: 報告書の生成後、左下にフローティングの AI Q&A ウィンドウが提供されます。AI は完全な旅程のコンテキスト情報を保持しており、ユーザーはいつでもチケット料金やルートの適しさなどの旅程の詳細について質問できます。
+* **マルチシティ旅行計画**: 一度の旅行で複数の都市を計画できます。都市を動的に追加し、それぞれの滞在日数を設定すると、システムが自動で総旅行日数を計算します。都市間移動日には交通手段の提案がスマートに表示され、予算パネルでは都市間交通費が別途集計され、天気パネルは都市ごとに表示され、ナレッジグラフはマルチシティのトポロジーを完全に表現します。
 * **ラグジュアリーなダークグラスモーフィズムデザイン**: 新しく設計されたダークグラスモーフィズム (Dark Luxury Glassmorphism) アプリのインターフェースにより、没入感のあるハイエンドな視覚体験を提供します。
 
 ---
@@ -132,7 +133,7 @@ npm run dev
 - [x] ~~歴史的な計画機能~~
 - [x] ~~エンタープライズ HTTP/SOCKS5 プロキシ構成サポート~~
 - [x] ~~エクスポートのレイアウトと地図の最適化~~
-- [ ] マルチ都市の旅行計画構成
+- [x] ~~マルチ都市の旅行計画構成~~
 - [ ] グルメ・おすすめレストランの詳細な強化
 
 ## 🙏 謝辞
