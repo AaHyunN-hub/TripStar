@@ -43,6 +43,31 @@
             </a-select>
           </li>
           <li class="nav-item">
+            <!-- 用户登录状态 -->
+            <template v-if="isLoggedIn">
+              <a-dropdown>
+                <a-button type="text" class="nav-link landing-nav-btn user-btn">
+                  <UserOutlined />
+                  <span class="user-name">{{ currentUser?.username }}</span>
+                </a-button>
+                <template #overlay>
+                  <a-menu>
+                    <a-menu-item @click="handleLogout">
+                      <LogoutOutlined /> {{ t('auth.logout') }}
+                    </a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+            </template>
+            <template v-else>
+              <router-link to="/login">
+                <a-button type="text" class="nav-link landing-nav-btn">
+                  {{ t('auth.loginBtn') }}
+                </a-button>
+              </router-link>
+            </template>
+          </li>
+          <li class="nav-item">
             <button
               type="button"
               class="nav-link landing-nav-btn settings-btn"
@@ -172,13 +197,25 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { reactive, ref, computed } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
+import { UserOutlined, LogoutOutlined } from '@ant-design/icons-vue'
 import type { RuntimeSettings } from '@/types'
-import { getRuntimeSettings, saveRuntimeSettings } from '@/services/api'
+import { getRuntimeSettings, saveRuntimeSettings, getStoredUser, isLoggedIn as checkLoggedIn, logout } from '@/services/api'
 
 const { t, locale } = useI18n()
+const router = useRouter()
+
+const isLoggedIn = computed(() => checkLoggedIn())
+const currentUser = computed(() => getStoredUser())
+
+const handleLogout = () => {
+  logout()
+  message.success(t('auth.logout'))
+  router.push('/login')
+}
 const settingsVisible = ref(false)
 const settingsLoading = ref(false)
 const settingsSaving = ref(false)

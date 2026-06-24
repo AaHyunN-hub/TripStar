@@ -38,14 +38,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 uv 包管理器
-RUN pip install --no-cache-dir uv -i https://mirrors.aliyun.com/pypi/simple/
+RUN pip install --no-cache-dir uv
 
 # 复制后端依赖并使用 uv 安装
 COPY backend/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 安装 gunicorn + uvicorn worker
-RUN uv pip install --system --no-cache gunicorn "uvicorn[standard]" -i https://mirrors.aliyun.com/pypi/simple/
+RUN uv pip install --system --no-cache gunicorn "uvicorn[standard]"
 
 # 预下载 amap-mcp-server（避免首次请求时下载导致超时）
 RUN uvx amap-mcp-server --help || true

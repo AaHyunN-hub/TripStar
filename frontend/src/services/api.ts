@@ -158,6 +158,13 @@ const apiClient = axios.create({
 apiClient.interceptors.request.use(
   (config) => {
     config.baseURL = getRuntimeApiBaseUrl()
+    // 自动附带 JWT token
+    if (typeof window !== 'undefined') {
+      const token = window.localStorage.getItem('tripstar.auth.token')
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`
+      }
+    }
     console.log('发送请求:', config.method?.toUpperCase(), config.url)
     return config
   },
@@ -369,6 +376,75 @@ export async function healthCheck(): Promise<any> {
     console.error('健康检查失败:', error)
     throw new Error(error.message || t('api.healthCheckFailed'))
   }
+}
+
+// ============ 身份认证 ============
+
+export interface AuthResult {
+  success: boolean
+  message: string
+  token?: string
+  user?: { id: number; username: string }
+}
+
+/**
+ * 用户登录
+ */
+export async function login(username: string, password: string): Promise<AuthResult> {
+  const response = await apiClient.post<AuthResult>('/api/auth/login', { username, password })
+  return response.data
+}
+
+/**
+ * 用户注册
+ */
+export async function register(username: string, password: string): Promise<AuthResult> {
+  const response = await apiClient.post<AuthResult>('/api/auth/register', { username, password })
+  return response.data
+}
+
+/**
+ * 获取当前用户信息
+ */
+export async function getCurrentUser(): Promise<AuthResult | null> {
+  try {
+    const response = await apiClient.get<AuthResult>('/api/auth/me')
+    return response.data
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 退出登录
+ */
+export function logout(): void {
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem('tripstar.auth.token')
+    localStorage.removeItem('tripstar.auth.user')
+  }
+}
+
+/**
+ * 获取当前登录用户信息（从 localStorage）
+ */
+export function getStoredUser(): { id: number; username: string } | null {
+  if (typeof window === 'undefined') return null
+  const raw = localStorage.getItem('tripstar.auth.user')
+  if (!raw) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 判断是否已登录
+ */
+export function isLoggedIn(): boolean {
+  if (typeof window === 'undefined') return false
+  return !!localStorage.getItem('tripstar.auth.token')
 }
 
 export default apiClient

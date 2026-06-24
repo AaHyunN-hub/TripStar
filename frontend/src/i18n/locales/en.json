@@ -26,6 +26,25 @@
     "cancel": "Cancel",
     "delete": "Delete"
   },
+  "auth": {
+    "loginTitle": "Welcome Back",
+    "registerTitle": "Create Account",
+    "username": "Username",
+    "usernamePlaceholder": "Enter your username",
+    "usernameRequired": "Please enter your username",
+    "password": "Password",
+    "passwordPlaceholder": "Enter your password",
+    "passwordRequired": "Please enter your password",
+    "passwordMin": "Password must be at least 6 characters",
+    "loginBtn": "Sign In",
+    "registerBtn": "Sign Up",
+    "noAccount": "Don't have an account?",
+    "hasAccount": "Already have an account?",
+    "goRegister": "Sign Up Now",
+    "goLogin": "Sign In",
+    "unknownError": "Operation failed, please try again",
+    "logout": "Logout"
+  },
   "api": {
     "submitTripPlanFailed": "Failed to submit trip plan",
     "queryTaskStatusFailed": "Failed to query task status",

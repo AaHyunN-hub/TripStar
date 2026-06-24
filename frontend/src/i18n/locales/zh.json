@@ -26,6 +26,25 @@
     "cancel": "取消",
     "delete": "删除"
   },
+  "auth": {
+    "loginTitle": "欢迎回来",
+    "registerTitle": "创建账号",
+    "username": "用户名",
+    "usernamePlaceholder": "请输入用户名",
+    "usernameRequired": "请输入用户名",
+    "password": "密码",
+    "passwordPlaceholder": "请输入密码",
+    "passwordRequired": "请输入密码",
+    "passwordMin": "密码至少 6 位",
+    "loginBtn": "登录",
+    "registerBtn": "注册",
+    "noAccount": "还没有账号？",
+    "hasAccount": "已有账号？",
+    "goRegister": "立即注册",
+    "goLogin": "去登录",
+    "unknownError": "操作失败，请重试",
+    "logout": "退出登录"
+  },
   "api": {
     "submitTripPlanFailed": "提交旅行计划失败",
     "queryTaskStatusFailed": "查询任务状态失败",

@@ -1,4 +1,24 @@
 services:
+  db:
+    image: mysql:8.0
+    container_name: tripstar-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-tripstar123}
+      MYSQL_DATABASE: ${DB_NAME:-tripstar}
+      MYSQL_CHARACTER_SET_SERVER: utf8mb4
+      MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD:-tripstar123}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
   trip-planner:
     build:
       context: .
@@ -21,9 +41,20 @@ services:
       - HOST=0.0.0.0
       - PORT=7860
       - LOG_LEVEL=INFO
+      # 数据库配置（连接 Docker 内的 MySQL 服务）
+      - DB_TYPE=mysql
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=${DB_PASSWORD:-tripstar123}
+      - DB_NAME=${DB_NAME:-tripstar}
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
       - trip_data:/app/backend/data
     restart: unless-stopped
 
 volumes:
+  mysql_data:
   trip_data:

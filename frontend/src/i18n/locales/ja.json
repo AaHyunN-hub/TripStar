@@ -26,6 +26,25 @@
     "cancel": "キャンセル",
     "delete": "削除"
   },
+  "auth": {
+    "loginTitle": "おかえりなさい",
+    "registerTitle": "アカウント作成",
+    "username": "ユーザー名",
+    "usernamePlaceholder": "ユーザー名を入力",
+    "usernameRequired": "ユーザー名を入力してください",
+    "password": "パスワード",
+    "passwordPlaceholder": "パスワードを入力",
+    "passwordRequired": "パスワードを入力してください",
+    "passwordMin": "パスワードは6文字以上必要です",
+    "loginBtn": "ログイン",
+    "registerBtn": "登録",
+    "noAccount": "アカウントをお持ちでない方？",
+    "hasAccount": "すでにアカウントをお持ちの方？",
+    "goRegister": "新規登録",
+    "goLogin": "ログイン",
+    "unknownError": "操作に失敗しました。もう一度お試しください",
+    "logout": "ログアウト"
+  },
   "api": {
     "submitTripPlanFailed": "旅行プランの送信に失敗しました",
     "queryTaskStatusFailed": "タスク状態の取得に失敗しました",
