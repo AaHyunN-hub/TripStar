@@ -14,6 +14,7 @@ import webbrowser
 import time
 import re
 import json
+import shutil
 from pathlib import Path
 from tkinter import (
     Tk, Frame, Button, Text, END, NORMAL, DISABLED,
@@ -145,15 +146,51 @@ class DeployWorker:
                 self.log_cb("  尝试方式 1/3: uv venv .venv", "info")
                 ok = self._run_cmd(["uv", "venv", ".venv", "--clear"], cwd=BACKEND_DIR, timeout=120)
 
+            # 多级修复链：uv → python -m venv → python -m venv --without-pip → virtualenv
+            ok = False
+
+            # 如存在损坏的 .venv 文件/目录，先清理
+            venv_path = BACKEND_DIR / ".venv"
+            if venv_path.exists():
+                self.log_cb("  发现残留的 .venv，正在清理...", "warn")
+                try:
+                    if venv_path.is_dir():
+                        shutil.rmtree(venv_path)
+                    else:
+                        venv_path.unlink()
+                    self.log_cb("  已清理残留 .venv", "ok")
+                except Exception as e:
+                    self.log_cb(f"  清理残留失败: {e}", "warn")
+
+            # 尝试 1: uv venv
+            if use_uv:
+                self.log_cb("  尝试方式 1/4: uv venv .venv", "info")
+                ok = self._run_cmd(["uv", "venv", ".venv", "--clear"], cwd=BACKEND_DIR, timeout=120)
+
             # 尝试 2: python -m venv
             if not ok:
-                self.log_cb("  尝试方式 2/3: python -m venv", "warn")
-                ok = self._run_cmd([python_cmd, "-m", "venv", ".venv", "--clear"], cwd=BACKEND_DIR, timeout=120)
+                self.log_cb("  尝试方式 2/4: python -m venv", "warn")
+                ok = self._run_cmd([python_cmd, "-m", "venv", ".venv", "--clear"],
+                                   cwd=BACKEND_DIR, timeout=120)
 
-            # 尝试 3: virtualenv（先 pip 安装）
+            # 尝试 3: python -m venv --without-pip（跳过 pip 引导，兼容 ensurepip 失败场景）
             if not ok:
-                self.log_cb("  尝试方式 3/3: 安装 virtualenv 并创建", "warn")
-                # 先用系统 python 安装 virtualenv
+                self.log_cb("  尝试方式 3/4: python -m venv --without-pip", "warn")
+                ok = self._run_cmd([python_cmd, "-m", "venv", ".venv", "--clear", "--without-pip"],
+                                   cwd=BACKEND_DIR, timeout=120)
+                if ok:
+                    # 手动安装 pip
+                    self.log_cb("  venv 创建成功，正在安装 pip...", "info")
+                    if sys.platform == "win32":
+                        py_venv = str(venv_path / "Scripts" / "python.exe")
+                    else:
+                        py_venv = str(venv_path / "bin" / "python")
+                    self._run_cmd([py_venv, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                                  cwd=BACKEND_DIR, timeout=120)
+
+            # 尝试 4: virtualenv（先 pip 安装）
+            if not ok:
+                self.log_cb("  尝试方式 4/4: 安装 virtualenv 并创建", "warn")
                 self._run_cmd([python_cmd, "-m", "pip", "install", "virtualenv", "--user"],
                               cwd=BACKEND_DIR, timeout=120)
                 ok = self._run_cmd([python_cmd, "-m", "virtualenv", ".venv"],
@@ -163,10 +200,14 @@ class DeployWorker:
                 # 输出详细诊断信息帮助用户排查
                 self.log_cb("  ── 诊断信息 ──", "error")
                 self._run_cmd([python_cmd, "--version"], cwd=BACKEND_DIR, timeout=10)
-                self._run_cmd([python_cmd, "-c", "import venv; print('venv 模块可用')"],
+                self._run_cmd([python_cmd, "-c", "import venv; print('venv 模块:', '可用' if __import__('venv') else '不可用')"],
                               cwd=BACKEND_DIR, timeout=10)
+                self.log_cb("  ── 建议手动操作 ──", "warn")
+                self.log_cb("  请尝试在终端中执行:", "warn")
+                self.log_cb(f"    cd {BACKEND_DIR}", "warn")
+                self.log_cb("    python -m venv .venv", "warn")
                 self.step_cb("fail", "create_venv", "创建 Python 虚拟环境",
-                             "三种方式均失败，请尝试手动创建：python -m venv backend/.venv")
+                             "四种方式均失败，请参考日志中的手动操作指引")
                 return False
             self.step_cb("success", "create_venv", "创建 Python 虚拟环境")
 
@@ -395,14 +436,54 @@ class DeployWorker:
         if use_uv:
             self.log_cb("  ✓ uv 已安装（将加速 Python 依赖安装）", "ok")
         else:
+            # 多方式安装 uv：pip → 独立安装器
             self.log_cb("  ○ uv 未安装，正在自动安装...", "warn")
+
+            # 方式 1: pip install uv
             ok = self._run_cmd([python_cmd, "-m", "pip", "install", "uv", "--quiet"],
                                cwd=BACKEND_DIR, timeout=120)
+
+            # 方式 2: pip install uv --user（用户作用域）
+            if not ok:
+                self.log_cb("  重试: pip install uv --user", "warn")
+                ok = self._run_cmd([python_cmd, "-m", "pip", "install", "uv", "--user", "--quiet"],
+                                   cwd=BACKEND_DIR, timeout=120)
+
+            # 方式 3: 指定 PyPI 镜像源
+            if not ok:
+                self.log_cb("  重试: 指定 PyPI 源安装", "warn")
+                ok = self._run_cmd(
+                    [python_cmd, "-m", "pip", "install", "uv", "--quiet",
+                     "-i", "https://pypi.org/simple/"],
+                    cwd=BACKEND_DIR, timeout=120,
+                )
+
+            # 方式 4 (Windows): 独立 PowerShell 安装器
+            if not ok and sys.platform == "win32":
+                self.log_cb("  重试: 独立安装器 (PowerShell)", "warn")
+                ps_cmd = (
+                    'powershell -ExecutionPolicy ByPass -c '
+                    '"irm https://astral.sh/uv/install.ps1 | iex"'
+                )
+                ok = self._run_cmd(ps_cmd, cwd=PROJECT_DIR, timeout=120, shell=True)
+
+            # 方式 4 (Linux/macOS): curl 安装器
+            if not ok and sys.platform != "win32":
+                self.log_cb("  重试: 独立安装器 (curl)", "warn")
+                ok = self._run_cmd(
+                    'curl -LsSf https://astral.sh/uv/install.sh | sh',
+                    cwd=PROJECT_DIR, timeout=120, shell=True,
+                )
+
             if ok:
-                self.log_cb("  ✓ uv 安装成功", "ok")
-                use_uv = True
+                # 重新检测 uv
+                if self._which("uv"):
+                    self.log_cb("  ✓ uv 安装成功", "ok")
+                    use_uv = True
+                else:
+                    self.log_cb("  ○ uv 已安装但不在 PATH 中（将使用 pip）", "warn")
             else:
-                self.log_cb("  ○ uv 自动安装失败（将使用 pip 作为备选）", "warn")
+                self.log_cb("  ○ uv 自动安装均失败（将使用 pip 作为备选）", "warn")
 
         return True, python_cmd, use_uv
 
