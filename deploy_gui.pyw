@@ -71,7 +71,7 @@ class DeployWorker:
         self._stop.set()
 
     # ---------- 工具 ----------
-    def _run_cmd(self, cmd, cwd=None, timeout=300):
+    def _run_cmd(self, cmd, cwd=None, timeout=300, shell=False):
         if self._stop.is_set():
             return False
         try:
@@ -83,6 +83,7 @@ class DeployWorker:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                shell=shell,
             )
             for line in iter(proc.stdout.readline, ""):
                 if self._stop.is_set():
@@ -138,14 +139,6 @@ class DeployWorker:
             self.step_cb("skip", "create_venv", "创建 Python 虚拟环境", "已存在，跳过")
         else:
             self.log_cb("正在创建虚拟环境...", "info")
-            # 多级修复链：uv → python -m venv → virtualenv
-            ok = False
-
-            # 尝试 1: uv venv
-            if use_uv:
-                self.log_cb("  尝试方式 1/3: uv venv .venv", "info")
-                ok = self._run_cmd(["uv", "venv", ".venv", "--clear"], cwd=BACKEND_DIR, timeout=120)
-
             # 多级修复链：uv → python -m venv → python -m venv --without-pip → virtualenv
             ok = False
 
