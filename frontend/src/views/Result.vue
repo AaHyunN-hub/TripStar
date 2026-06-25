@@ -357,6 +357,11 @@
                           <span class="reservation-badge">📋 需提前预约</span>
                           <span v-if="item.reservation_tips" class="reservation-tips">{{ item.reservation_tips }}</span>
                         </div>
+                        <div v-if="attractionXhsLinks[item.name]" class="xhs-link-row">
+                          <a :href="attractionXhsLinks[item.name]" target="_blank" rel="noopener noreferrer" class="xhs-link-btn">
+                            📕 查看小红书原文
+                          </a>
+                        </div>
                       </div>
                     </a-card>
                   </a-list-item>
@@ -600,6 +605,7 @@ const planId = ref('')
 const editMode = ref(false)
 const originalPlan = ref<TripPlan | null>(null)
 const attractionPhotos = ref<Record<string, string>>({})
+const attractionXhsLinks = ref<Record<string, string>>({})
 const activeSection = ref('overview')
 const activeDays = ref<number[]>([0]) // 默认展开第一天
 const activeOverviewCard = ref(1)
@@ -1807,6 +1813,9 @@ const loadAttractionPhotos = async () => {
         const data = await response.json()
         if (data.success && data.data.photo_url) {
           attractionPhotos.value[name] = data.data.photo_url
+        }
+        if (data.success && data.data.xhs_url) {
+          attractionXhsLinks.value[name] = data.data.xhs_url
         }
       } catch (err) {
         console.error(`获取${name}图片失败:`, err)
@@ -3164,6 +3173,30 @@ const drawRoutes = async (AMap: any, attractions: any[]): Promise<any[]> => {
   font-size: 13px;
   font-weight: 700;
   color: #ff9800;
+}
+
+.xhs-link-row {
+  margin-top: 8px;
+}
+
+.xhs-link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: #fff;
+  background: rgba(255, 71, 87, 0.2);
+  border: 1px solid rgba(255, 71, 87, 0.4);
+  border-radius: 6px;
+  text-decoration: none;
+  transition: all 0.2s;
+}
+
+.xhs-link-btn:hover {
+  background: rgba(255, 71, 87, 0.35);
+  border-color: #ff4757;
+  color: #fff;
 }
 
 .reservation-tips {

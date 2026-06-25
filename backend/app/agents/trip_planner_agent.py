@@ -447,13 +447,14 @@ class MultiAgentTripPlanner:
             print(f"偏好: {', '.join(request.preferences) if request.preferences else '无'}")
             print(f"{'='*60}\n")
 
-            from ..services.xhs_service import search_xhs_attractions
+            from ..services.xhs_service import search_xhs_attractions, search_xhs_food
             keywords = request.preferences[0] if request.preferences else "景点"
             _lang = (getattr(request, 'language', 'zh') or 'zh').strip().lower().split('-')[0]
             _lang_hint = "" if _lang == "zh" else f" Please respond in {'English' if _lang == 'en' else _lang}."
 
             # ========== 按城市逐一搜集信息 ==========
             all_attractions: Dict[str, str] = {}
+            all_food: Dict[str, str] = {}
             all_weather: Dict[str, str] = {}
             all_hotels: Dict[str, str] = {}
 
@@ -476,6 +477,15 @@ class MultiAgentTripPlanner:
                 )
                 all_attractions[city] = attraction_response
                 print(f"📍 {city} 景点搜索结果: {attraction_response[:150]}...")
+
+                # [1.5] 美食搜索
+                print(f"  [{idx+1}/{total_cities}] 正在搜索 {city} 的美食...")
+                food_response = await asyncio.to_thread(
+                    search_xhs_food, city, _lang
+                )
+                all_food[city] = food_response
+                if food_response:
+                    print(f"🍜 {city} 美食搜索结果: {food_response[:150]}...")
 
                 # [2] 天气查询
                 print(f"  [{idx+1}/{total_cities}] 正在查询 {city} 的天气...")
@@ -523,6 +533,7 @@ class MultiAgentTripPlanner:
                 all_attractions,
                 all_weather,
                 all_hotels,
+                all_food,
             )
             print(f"行程规划结果: {planner_response[:300]}...\n")
 
@@ -570,6 +581,7 @@ class MultiAgentTripPlanner:
         attractions: Dict[str, str],
         weather: Dict[str, str],
         hotels: Dict[str, str],
+        food: Dict[str, str] = None,
     ) -> str:
         """规划阶段使用更长超时，并在超时后重试一次。
         
@@ -577,9 +589,10 @@ class MultiAgentTripPlanner:
             attractions: {city_name: 景点搜索结果文本}
             weather: {city_name: 天气查询结果文本}
             hotels: {city_name: 酒店搜索结果文本}
+            food: {city_name: 美食搜索结果文本}
         """
         timeout = int(os.getenv("TRIP_PLANNER_TIMEOUT", "180"))
-        planner_query = self._build_planner_query(request, attractions, weather, hotels)
+        planner_query = self._build_planner_query(request, attractions, weather, hotels, food or {})
 
         try:
             return await asyncio.to_thread(
@@ -611,6 +624,7 @@ class MultiAgentTripPlanner:
         attractions: Dict[str, str],
         weather: Dict[str, str],
         hotels: Dict[str, str],
+        food: Dict[str, str] = None,
     ) -> str:
         """构建行程规划查询（支持多城市）
         
@@ -618,6 +632,7 @@ class MultiAgentTripPlanner:
             attractions: {city_name: 景点搜索结果文本}
             weather: {city_name: 天气查询结果文本}
             hotels: {city_name: 酒店搜索结果文本}
+            food: {city_name: 美食搜索结果文本}
         """
         cities = request.cities
         total_cities = len(cities)
@@ -652,6 +667,9 @@ class MultiAgentTripPlanner:
         # 为每个城市附上搜集到的信息
         for cs in cities:
             city = cs.city
+            food_text = food.get(city, '') if food else ''
+            food_section = f"\n**{city} 美食推荐（来自小红书）:**\n{food_text}\n" if food_text else ""
+
             if is_multi_city:
                 query += f"""
 --- {city} ({cs.days}天) ---
@@ -661,7 +679,7 @@ class MultiAgentTripPlanner:
 {weather.get(city, '无')}
 **{city} 酒店信息:**
 {hotels.get(city, '无')}
-"""
+{food_section}"""
             else:
                 query += f"""
 **景点信息:**
@@ -672,7 +690,7 @@ class MultiAgentTripPlanner:
 
 **酒店信息:**
 {hotels.get(city, '无')}
-"""
+{food_section}"""
 
         query += """
 **要求:**

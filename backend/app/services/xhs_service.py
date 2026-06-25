@@ -397,7 +397,156 @@ JSON 返回示例:
         return "尝试提取小红书结构化数据失败，降级回常规处理。"
 
 
+# ============ 美食搜索 ============
+
+def search_xhs_food(city: str, language: str = "zh") -> str:
+    """搜索小红书美食推荐，返回格式化文本"""
+    try:
+        client = get_xhs_client()
+        query = f"{city} 美食推荐 必吃"
+        res_json = client.search_notes(keyword=query)
+        items = res_json.get("data", {}).get("items", [])[:4]
+
+        combined_text = ""
+        for note in items:
+            if note.get("model_type") == "note":
+                title = note.get("display_title", "") or note.get("title", "")
+                note_id = note.get("id", "")
+                xsec_token = note.get("xsec_token", "")
+                note_url = f"https://www.xiaohongshu.com/explore/{note_id}"
+
+                desc = ""
+                try:
+                    detail_res = client.get_note_detail(note_id, xsec_token)
+                    detail_items = detail_res.get("data", {}).get("items", [])
+                    if detail_items:
+                        note_data = detail_items[0].get("note_card", {})
+                        desc = note_data.get("desc", "")
+                except Exception:
+                    pass
+                combined_text += f"【{title}】({note_url})\n{desc}\n\n"
+
+        if not combined_text.strip():
+            return f"未在小红书检索到关于 {city} 美食的内容。"
+
+        from .llm_service import get_llm
+        llm = get_llm()
+        extract_prompt = f"""你是一位美食专家。请从以下小红书笔记中提取{city}的必吃美食推荐。
+
+要求：
+1. 提取最值得推荐的 3-6 家餐厅/小吃
+2. 每项包含: 名称、菜系、推荐理由、人均价格（预估）
+3. 以JSON数组格式输出：{{"name":"","cuisine":"","reason":"","price_per_person":0}}
+4. 只输出JSON数组，不要其他文字
+
+小红书笔记：
+{combined_text}"""
+        response = llm._client.chat.completions.create(
+            model=llm.model,
+            messages=[{"role": "user", "content": extract_prompt}],
+            temperature=0.1,
+            max_tokens=4096,
+        )
+        raw = response.choices[0].message.content or ""
+        # 清理 markdown 代码块标记
+        cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        try:
+            items = json.loads(cleaned)
+            if isinstance(items, list):
+                result = f"以下是来自小红书的{city}美食推荐：\n"
+                for item in items:
+                    name = item.get("name", "")
+                    cuisine = item.get("cuisine", "")
+                    reason = item.get("reason", "")
+                    price = item.get("price_per_person", 0)
+                    result += f"- {name}（{cuisine}）: {reason}，人均约¥{price}\n"
+                return result
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return raw
+    except Exception as e:
+        print(f"❌ 搜索美食失败: {e}")
+        return ""
+
+
 # ============ 景点搜图 ============
+
+def get_xhs_note_info_sync(keyword: str) -> dict:
+    """根据关键词搜索小红书，返回首图的图片URL和笔记链接"""
+    result = {"photo_url": "", "xhs_url": ""}
+    try:
+        client = get_xhs_client()
+        res_json = client.search_notes(keyword=keyword, sort_type=0)
+        items = res_json.get("data", {}).get("items", [])
+
+        target_note_id = None
+        target_xsec_token = ""
+        for note in items:
+            if note.get("model_type") == "note":
+                target_note_id = note.get("id")
+                target_xsec_token = note.get("xsec_token", "")
+                break
+
+        if not target_note_id:
+            return result
+
+        xsec = f"?xsec_token={target_xsec_token}&xsec_source=pc_search" if target_xsec_token else ""
+        result["xhs_url"] = f"https://www.xiaohongshu.com/explore/{target_note_id}{xsec}"
+
+        # 方案 A: 原生 API 获取图片
+        try:
+            detail_res = client.get_note_detail(target_note_id, target_xsec_token)
+            detail_items = detail_res.get("data", {}).get("items", [])
+            if detail_items:
+                note_card = detail_items[0].get("note_card", {})
+                image_list = note_card.get("image_list", [])
+                if image_list:
+                    first_img = image_list[0]
+                    info_list = first_img.get("info_list", [])
+                    if len(info_list) > 1:
+                        result["photo_url"] = info_list[1].get("url", "")
+                    elif info_list:
+                        result["photo_url"] = info_list[0].get("url", "")
+                    else:
+                        result["photo_url"] = (
+                            first_img.get("url_default", "")
+                            or first_img.get("url_pre", "")
+                            or first_img.get("url", "")
+                        )
+                    return result
+        except Exception:
+            pass
+
+        # 方案 B: SSR 抓取
+        url = f"https://www.xiaohongshu.com/explore/{target_note_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = httpx.get(url, headers=headers, timeout=10)
+        match = re.search(r'window\.__INITIAL_STATE__=({.*?})</script>', resp.text)
+        if match:
+            state_json_str = match.group(1).replace("undefined", "null")
+            state_json = json.loads(state_json_str)
+            note_data = (
+                state_json.get("note", {})
+                .get("noteDetailMap", {})
+                .get(target_note_id, {})
+                .get("note", {})
+            )
+            img_list = note_data.get("imageList", [])
+            if img_list:
+                first_img = (
+                    img_list[0].get("urlDefault")
+                    or img_list[0].get("urlPattern")
+                    or img_list[0].get("url")
+                )
+                if first_img:
+                    result["photo_url"] = first_img
+        return result
+    except Exception as e:
+        print(f"小红书笔记信息抓取失败 ({keyword}): {e}")
+        return result
+
 
 def get_xhs_photo_sync(keyword: str) -> str:
     """根据关键词从小红书搜索一张首图URL
