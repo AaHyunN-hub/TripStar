@@ -69,6 +69,7 @@ async def init_db():
         await _wait_for_db()
 
     async with engine.begin() as conn:
-        from .models.user import User  # noqa: F401 — 确保模型被加载
+        from .models.user import User  # noqa: F401
+        from .models.trip import TripTask  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
     print(f"📦 数据库已初始化 ({_DB_TYPE}): {DATABASE_URL}")

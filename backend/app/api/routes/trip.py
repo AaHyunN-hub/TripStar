@@ -6,12 +6,18 @@ import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from sqlalchemy import select, desc
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...agents.trip_planner_agent import get_trip_planner_agent
+from ...database import get_db, async_session_factory
 from ...models.schemas import TripPlanResponse, TripRequest
+from ...models.trip import TripTask
+from ...models.user import User
+from ...services.auth_service import get_current_user
 from ...services.knowledge_graph_service import build_knowledge_graph
 
 router = APIRouter(prefix="/trip", tags=["旅行规划"])
@@ -22,7 +28,7 @@ _FINAL_TASK_STATUS = {"completed", "failed"}
 _TASKS_DATA_DIR = Path(__file__).resolve().parents[3] / "data" / "trip_tasks"
 
 
-def _create_task_state(task_id: str) -> Dict[str, Any]:
+def _create_task_state(task_id: str, user_id: Optional[int] = None) -> Dict[str, Any]:
     """初始化任务状态。"""
     return {
         "task_id": task_id,
@@ -34,6 +40,7 @@ def _create_task_state(task_id: str) -> Dict[str, Any]:
         "result": None,
         "error": None,
         "request_payload": None,
+        "user_id": user_id,
         "subscribers": [],  # list[asyncio.Queue]
     }
 
@@ -283,12 +290,31 @@ async def _update_task_state(
     summary="提交旅行规划任务",
     description="异步提交旅行规划请求，立即返回 task_id；可通过 WebSocket 或 /trip/status/{task_id} 获取执行状态",
 )
-async def plan_trip(request: TripRequest):
+async def plan_trip(
+    request: TripRequest,
+    current_user: Optional[User] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """提交旅行规划任务（立即返回 task_id）。"""
+    user_id = current_user.id if current_user else None
     task_id = str(uuid.uuid4())[:8]
-    _tasks[task_id] = _create_task_state(task_id)
+    _tasks[task_id] = _create_task_state(task_id, user_id=user_id)
     _tasks[task_id]["request_payload"] = request.model_dump(mode="json")
     _persist_task_state(task_id, _tasks[task_id])
+    
+    # 写入数据库
+    try:
+        db_task = TripTask(
+            task_id=task_id,
+            user_id=user_id or 0,
+            request_data=request.model_dump(mode="json"),
+            status="processing",
+        )
+        db.add(db_task)
+        await db.commit()
+    except Exception as e:
+        print(f"⚠️  写入任务到数据库失败: {e}")
+        await db.rollback()
 
     _city_display = ' → '.join(cs.city for cs in request.cities) if request.cities else request.city
     print(f"\n{'=' * 60}")
@@ -316,6 +342,61 @@ async def plan_trip(request: TripRequest):
         "ws_url": f"/api/trip/ws/{task_id}",
         "message": f"任务已提交，可通过 WebSocket /api/trip/ws/{task_id} 实时订阅状态",
     }
+
+
+async def _save_task_result_to_db(task_id: str, task: Dict[str, Any]):
+    """任务完成/失败后，更新数据库中的记录。"""
+    try:
+        async with async_session_factory() as db:
+            result = task.get("result")
+            plan_data = _serialize_result(result)
+            plan = (plan_data or {}).get("data") or {}
+            request_payload = task.get("request_payload") or {}
+
+            cities = plan.get("cities") or request_payload.get("cities") or []
+            city = plan.get("city") or request_payload.get("city") or ""
+            display_city = ' → '.join(c.city if isinstance(c, dict) else c for c in cities) if isinstance(cities, list) and cities else city
+            if isinstance(cities, list):
+                cities_list = [c.city if isinstance(c, dict) else c for c in cities]
+            else:
+                cities_list = []
+
+            # 先查找已有记录，没有则新建
+            stmt = select(TripTask).where(TripTask.task_id == task_id)
+            result_db = await db.execute(stmt)
+            db_task = result_db.scalar_one_or_none()
+
+            if db_task:
+                # 更新已有记录
+                db_task.status = task.get("status", "failed")
+                db_task.city = display_city
+                db_task.cities = cities_list
+                db_task.start_date = plan.get("start_date") or request_payload.get("start_date") or ""
+                db_task.end_date = plan.get("end_date") or request_payload.get("end_date") or ""
+                db_task.travel_days = plan.get("travel_days") or request_payload.get("travel_days") or 0
+                db_task.overall_suggestions = plan.get("overall_suggestions") or ""
+                db_task.plan_data = plan if plan else None
+                db_task.graph_data = (plan_data or {}).get("graph_data")
+            else:
+                # 新建记录
+                db_task = TripTask(
+                    task_id=task_id,
+                    user_id=task.get("user_id") or 0,
+                    request_data=request_payload,
+                    status=task.get("status", "failed"),
+                    city=display_city,
+                    cities=cities_list,
+                    start_date=plan.get("start_date") or request_payload.get("start_date") or "",
+                    end_date=plan.get("end_date") or request_payload.get("end_date") or "",
+                    travel_days=plan.get("travel_days") or request_payload.get("travel_days") or 0,
+                    overall_suggestions=plan.get("overall_suggestions") or "",
+                    plan_data=plan if plan else None,
+                    graph_data=(plan_data or {}).get("graph_data"),
+                )
+                db.add(db_task)
+            await db.commit()
+    except Exception as e:
+        print(f"⚠️  保存任务结果到数据库失败: {e}")
 
 
 async def _run_trip_planning(task_id: str, request: TripRequest):
@@ -368,6 +449,11 @@ async def _run_trip_planning(task_id: str, request: TripRequest):
             result=trip_result,
         )
 
+        # 保存到数据库
+        task = _tasks.get(task_id)
+        if task:
+            await _save_task_result_to_db(task_id, task)
+
     except Exception as e:
         print(f"❌ 任务 {task_id} 失败: {e}")
         traceback.print_exc()
@@ -391,6 +477,11 @@ async def _run_trip_planning(task_id: str, request: TripRequest):
             message=error_msg,
             error=error_msg,
         )
+
+        # 也保存失败的记录
+        task = _tasks.get(task_id)
+        if task:
+            await _save_task_result_to_db(task_id, task)
 
 
 @router.websocket("/ws/{task_id}")
@@ -448,14 +539,47 @@ async def trip_task_ws(websocket: WebSocket, task_id: str):
 @router.get(
     "/history",
     summary="最近历史计划",
-    description="返回最近成功生成的旅行计划摘要，供首页快速找回历史计划",
+    description="返回最近成功生成的旅行计划摘要，按用户区分",
 )
-async def get_trip_history(limit: int = 10):
-    """查询最近的历史计划摘要。"""
+async def get_trip_history(
+    limit: int = 10,
+    current_user: Optional[User] = Depends(get_current_user),
+):
+    """查询最近的历史计划摘要（仅返回当前用户的数据）。"""
     safe_limit = max(1, min(int(limit or 10), 50))
-    return {
-        "items": _load_history_items(safe_limit),
-    }
+
+    if not current_user:
+        return {"items": []}
+
+    try:
+        async with async_session_factory() as db:
+            stmt = (
+                select(TripTask)
+                .where(TripTask.user_id == current_user.id)
+                .where(TripTask.status == "completed")
+                .order_by(desc(TripTask.created_at))
+                .limit(safe_limit)
+            )
+            result = await db.execute(stmt)
+            tasks = result.scalars().all()
+
+            items = []
+            for t in tasks:
+                items.append({
+                    "plan_id": t.task_id,
+                    "task_id": t.task_id,
+                    "city": t.city or "",
+                    "cities": t.cities or [],
+                    "start_date": t.start_date or "",
+                    "end_date": t.end_date or "",
+                    "travel_days": t.travel_days or 0,
+                    "updated_at": t.updated_at.isoformat(timespec="seconds") if t.updated_at else "",
+                    "overall_suggestions": (t.overall_suggestions or "")[:200],
+                })
+            return {"items": items}
+    except Exception as e:
+        print(f"⚠️  从数据库读取历史失败: {e}")
+        return {"items": []}
 
 
 @router.get(
