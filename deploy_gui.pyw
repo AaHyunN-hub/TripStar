@@ -87,6 +87,7 @@ class DeployWorker:
         self.log_cb = log_callback
         self.ask_cb = ask_callback
         self._stop = threading.Event()
+        self._fe_real_url = "http://localhost:5173"
 
     def stop(self):
         self._stop.set()
@@ -440,7 +441,7 @@ class DeployWorker:
         self.step_cb("start", "start_frontend", "启动前端服务")
 
         # 检查前端端口 5173 是否被占用
-        fe_status = self._check_port_or_ask(5173, "前端")
+        fe_status = self._check_port_or_ask(5173, "前端", prompt_ours=True)
         if fe_status == "cancelled":
             self.step_cb("fail", "start_frontend", "启动前端服务", "端口被占用，用户取消")
             return False
@@ -481,20 +482,30 @@ class DeployWorker:
                     if exit_code is not None:
                         self.log_cb(f"前端进程已退出 (退出码: {exit_code})", "error")
                         self._show_log_tail(frontend_log, "前端启动日志")
+                        self.step_cb("fail", "start_frontend", "启动前端服务", "Vite 已退出")
+                        return False
                     else:
-                        # 显示 Vite 日志，帮助诊断
-                        self.log_cb("前端进程未退出，正在读取启动日志...", "info")
-                        self._show_log_tail(frontend_log, "Vite 启动日志")
-                        # 也检查 Vite 是否用了其他端口（5173被占用时自动+1）
-                        for alt_port in (5174, 5175, 5172):
-                            alt_url = f"http://localhost:{alt_port}"
-                            if self._health_check(alt_url, timeout=1):
-                                self.log_cb(f"⚠ Vite 可能运行在端口 {alt_port}", "warn")
-                                self.log_cb(f"   请访问: http://localhost:{alt_port}", "warn")
-                                break
-                        self.log_cb("请稍后手动刷新 http://localhost:5173", "warn")
-                    self.step_cb("fail", "start_frontend", "启动前端服务", "Vite 未就绪")
-                    return False
+                        # 从 Vite 日志中解析实际运行的端口
+                        self.log_cb("正在从启动日志中解析端口...", "info")
+                        real_url = self._parse_vite_url(frontend_log)
+                        if real_url:
+                            self.log_cb(f"检测到 Vite 实际运行地址: {real_url}", "ok")
+                            if self._health_check(real_url, timeout=2):
+                                self.log_cb(f"前端服务已就绪 ✓", "ok")
+                                # 更新前端 URL 供后续步骤使用
+                                self._fe_real_url = real_url
+                                self.step_cb("success", "start_frontend", "启动前端服务")
+                            else:
+                                self.log_cb(f"Vite 日志显示 {real_url} 但无法访问", "error")
+                                self._show_log_tail(frontend_log, "Vite 启动日志")
+                                self.step_cb("fail", "start_frontend", "启动前端服务",
+                                             f"Vite 在 {real_url} 但无法访问")
+                                return False
+                        else:
+                            self._show_log_tail(frontend_log, "Vite 启动日志")
+                            self.step_cb("fail", "start_frontend", "启动前端服务",
+                                         "Vite 未就绪")
+                            return False
             except Exception as e:
                 self.log_cb(f"前端启动失败: {e}，正在重试...", "warn")
                 try:
@@ -514,10 +525,11 @@ class DeployWorker:
 
         # --- step 6: 记下端口，由 GUI 询问用户后决定是否打开浏览器 ---
         self.step_cb("start", "open_browser", "打开浏览器")
-        self.log_cb(f"前端地址: http://localhost:5173", "ok")
+        fe_url = getattr(self, "_fe_real_url", "http://localhost:5173")
+        self.log_cb(f"前端地址: {fe_url}", "ok")
         self.log_cb(f"后端文档: http://localhost:{port}/docs", "ok")
-        # step 6 保持 running，GUI 在询问用户后决定 success / skip
-        return ("started", port)
+        # 把前端实际 URL 带回 GUI
+        return ("started", port, fe_url)
 
     # ---------- 内部辅助 ----------
     def _check_env_impl(self):
@@ -730,8 +742,9 @@ class DeployWorker:
             self.log_cb(f"  终止进程异常: {e}", "error")
             return False
 
-    def _check_port_or_ask(self, port, label="服务"):
+    def _check_port_or_ask(self, port, label="服务", prompt_ours=False):
         """检查端口是否被占用
+           prompt_ours=True 时，即使本项目的老进程也弹窗询问（防止旧进程占端口）
         返回: 'free' 空闲 | 'ours' 本项目进程 | 'killed' 已杀掉 | 'cancelled' 用户取消
         """
         info = self._find_process_by_port(port)
@@ -739,7 +752,7 @@ class DeployWorker:
             return "free"
         pid, pname, is_ours = info
 
-        if is_ours:
+        if is_ours and not prompt_ours:
             self.log_cb(f"  ✓ 端口 {port} 已被本项目占用（跳过启动）", "ok")
             return "ours"
 
@@ -775,6 +788,21 @@ class DeployWorker:
                 return True
             except Exception:
                 return False
+
+    @staticmethod
+    def _parse_vite_url(log_path):
+        """从 Vite 启动日志中解析实际地址（端口被占用时 Vite 会递增端口）"""
+        try:
+            text = Path(log_path).read_text(encoding="utf-8")
+            m = re.search(r'Local:\s*(https?://[^\s]+)', text)
+            if m:
+                return m.group(1).rstrip("/")
+            m = re.search(r'localhost:(\d{4,5})', text)
+            if m:
+                return f"http://localhost:{m.group(1)}"
+        except Exception:
+            pass
+        return None
 
     def _show_log_tail(self, log_path, label="日志"):
         """显示日志文件尾部内容（用于诊断启动失败）"""
@@ -1058,6 +1086,7 @@ class DeployGUI:
         # 监控控制
         self._services_started = False
         self._monitor_job = None
+        self._fe_monitor_url = "http://localhost:5173"
 
         # 底部状态标签 + 清空按钮
         bottom_bar = Frame(root, bg=self.COLORS["bg"])
@@ -1240,11 +1269,12 @@ class DeployGUI:
                     self.root.after(0, self._ask_deploy)
                 elif isinstance(result, tuple) and result[0] == "started":
                     port = result[1]
+                    fe_url = result[2] if len(result) >= 3 else "http://localhost:5173"
+                    self._fe_monitor_url = fe_url
                     self._msg_queue.put(("status", (
-                        "✅ 服务已启动！", "success")))
-                    # 启动实时运行状态监控
+                        f"✅ 服务已启动！前端: {fe_url}", "success")))
                     self.root.after(0, self._start_service_monitor)
-                    self.root.after(0, self._ask_browser, port)
+                    self.root.after(0, self._ask_browser, port, fe_url)
                 else:
                     self._msg_queue.put(("status", (
                         "❌ 启动失败，请查看日志", "fail")))
@@ -1265,21 +1295,20 @@ class DeployGUI:
         event.wait()
         return result_box[0]
 
-    def _ask_browser(self, port):
+    def _ask_browser(self, port, fe_url="http://localhost:5173"):
         """询问是否启动浏览器"""
         answer = messagebox.askyesno(
             "启动浏览器",
             "服务已启动！是否打开浏览器访问？\n\n"
-            f"前端地址: http://localhost:5173\n"
+            f"前端地址: {fe_url}\n"
             f"后端文档: http://localhost:{port}/docs",
             icon="question",
         )
         if answer:
-            webbrowser.open("http://localhost:5173")
+            webbrowser.open(fe_url)
             if self.step_panel:
-                self.step_panel.set_step("open_browser", "success",
-                                          "http://localhost:5173")
-            self.set_status("✅ 服务已启动，浏览器已打开", "success")
+                self.step_panel.set_step("open_browser", "success", fe_url)
+            self.set_status(f"✅ 服务已启动，浏览器已打开", "success")
         else:
             if self.step_panel:
                 self.step_panel.set_step("open_browser", "skip", "用户已取消")
@@ -1369,7 +1398,7 @@ class DeployGUI:
 
         def _check():
             be_alive = self._http_ok("http://localhost:8000/docs")
-            fe_alive = self._http_ok("http://localhost:5173")
+            fe_alive = self._http_ok(self._fe_monitor_url)
             self._msg_queue.put(("svc_status", (be_alive, fe_alive)))
 
         threading.Thread(target=_check, daemon=True).start()
