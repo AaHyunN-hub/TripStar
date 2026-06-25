@@ -123,7 +123,10 @@ class DeployWorker:
             npm = "npm.cmd" if sys.platform == "win32" else "npm"
             ok = self._run_cmd([npm, "install"], cwd=BACKEND_DIR, timeout=180)
             if not ok:
-                self.step_cb("fail", "install_backend_npm", "安装后端 Node.js 依赖", "npm install 失败")
+                self.log_cb("npm install 失败，正在重试（使用离线模式）...", "warn")
+                ok = self._run_cmd([npm, "install", "--prefer-offline", "--no-audit", "--no-fund"], cwd=BACKEND_DIR, timeout=180)
+            if not ok:
+                self.step_cb("fail", "install_backend_npm", "安装后端 Node.js 依赖", "npm install 失败，请检查网络连接")
                 return False
             self.step_cb("success", "install_backend_npm", "安装后端 Node.js 依赖")
 
@@ -134,8 +137,13 @@ class DeployWorker:
             self.step_cb("skip", "create_venv", "创建 Python 虚拟环境", "已存在，跳过")
         else:
             self.log_cb("正在创建虚拟环境...", "info")
-            cmd = ["uv", "venv", ".venv"] if use_uv else [python_cmd, "-m", "venv", ".venv"]
-            ok = self._run_cmd(cmd, cwd=BACKEND_DIR, timeout=120)
+            if use_uv:
+                ok = self._run_cmd(["uv", "venv", ".venv"], cwd=BACKEND_DIR, timeout=120)
+                if not ok:
+                    self.log_cb("uv venv 失败，回退到 python -m venv...", "warn")
+                    ok = self._run_cmd([python_cmd, "-m", "venv", ".venv"], cwd=BACKEND_DIR, timeout=120)
+            else:
+                ok = self._run_cmd([python_cmd, "-m", "venv", ".venv"], cwd=BACKEND_DIR, timeout=120)
             if not ok:
                 self.step_cb("fail", "create_venv", "创建 Python 虚拟环境", "虚拟环境创建失败")
                 return False
@@ -144,17 +152,30 @@ class DeployWorker:
         # --- step 4: 安装 Python 依赖 ---
         self.step_cb("start", "install_python_deps", "安装 Python 依赖包")
         self.log_cb("正在安装 Python 依赖包（可能需要几分钟）...", "info")
+
+        # 准备安装命令列表（按优先级从高到低）
+        install_attempts = []
         if use_uv:
-            pip_cmd = ["uv", "pip", "install", "-r", "requirements.txt"]
+            install_attempts.append(["uv", "pip", "install", "-r", "requirements.txt"])
+            install_attempts.append(["uv", "pip", "install", "--no-build-isolation", "-r", "requirements.txt"])
+        # pip 兜底
+        if sys.platform == "win32":
+            pip_exe = str(BACKEND_DIR / ".venv" / "Scripts" / "pip.exe")
         else:
-            if sys.platform == "win32":
-                pip_exe = str(BACKEND_DIR / ".venv" / "Scripts" / "pip.exe")
-            else:
-                pip_exe = str(BACKEND_DIR / ".venv" / "bin" / "pip")
-            pip_cmd = [pip_exe, "install", "-r", "requirements.txt"]
-        ok = self._run_cmd(pip_cmd, cwd=BACKEND_DIR, timeout=600)
+            pip_exe = str(BACKEND_DIR / ".venv" / "bin" / "pip")
+        install_attempts.append([pip_exe, "install", "-r", "requirements.txt"])
+        install_attempts.append([pip_exe, "install", "--no-build-isolation", "-r", "requirements.txt"])
+
+        ok = False
+        for i, cmd in enumerate(install_attempts):
+            if i > 0:
+                self.log_cb(f"重试方式 {i + 1}/{len(install_attempts)}...", "warn")
+            if self._run_cmd(cmd, cwd=BACKEND_DIR, timeout=600):
+                ok = True
+                break
+
         if not ok:
-            self.step_cb("fail", "install_python_deps", "安装 Python 依赖包", "pip install 失败，见日志")
+            self.step_cb("fail", "install_python_deps", "安装 Python 依赖包", "所有安装方式均失败，见日志")
             return False
         self.step_cb("success", "install_python_deps", "安装 Python 依赖包")
 
@@ -183,7 +204,10 @@ class DeployWorker:
             npm = "npm.cmd" if sys.platform == "win32" else "npm"
             ok = self._run_cmd([npm, "install"], cwd=FRONTEND_DIR, timeout=180)
             if not ok:
-                self.step_cb("fail", "install_frontend_npm", "安装前端依赖", "npm install 失败")
+                self.log_cb("npm install 失败，正在重试（使用离线模式）...", "warn")
+                ok = self._run_cmd([npm, "install", "--prefer-offline", "--no-audit", "--no-fund"], cwd=FRONTEND_DIR, timeout=180)
+            if not ok:
+                self.step_cb("fail", "install_frontend_npm", "安装前端依赖", "npm install 失败，请检查网络连接")
                 return False
             self.step_cb("success", "install_frontend_npm", "安装前端依赖")
 
@@ -270,17 +294,23 @@ class DeployWorker:
             venv_python, "-m", "uvicorn", "app.api.main:app",
             "--host", "0.0.0.0", "--port", str(port), "--reload",
         ]
+        kwargs = {"cwd": str(BACKEND_DIR), "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         try:
-            kwargs = {"cwd": str(BACKEND_DIR), "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-            if sys.platform == "win32":
-                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             subprocess.Popen(backend_cmd, **kwargs)
             self.log_cb("后端服务已启动", "ok")
             self.step_cb("success", "start_backend", "启动后端服务")
         except Exception as e:
-            self.log_cb(f"后端启动失败: {e}", "error")
-            self.step_cb("fail", "start_backend", "启动后端服务", str(e))
-            return False
+            self.log_cb(f"后端启动失败: {e}，正在重试...", "warn")
+            try:
+                subprocess.Popen(backend_cmd, **kwargs)
+                self.log_cb("后端服务已启动（重试成功）", "ok")
+                self.step_cb("success", "start_backend", "启动后端服务")
+            except Exception as e2:
+                self.log_cb(f"后端启动重试仍然失败: {e2}", "error")
+                self.step_cb("fail", "start_backend", "启动后端服务", str(e2))
+                return False
 
         # 等待后端就绪
         self.log_cb("等待后端就绪...", "info")
@@ -289,17 +319,23 @@ class DeployWorker:
         # --- step 5: 启动前端 ---
         self.step_cb("start", "start_frontend", "启动前端服务")
         npm = "npm.cmd" if sys.platform == "win32" else "npm"
+        kwargs = {"cwd": str(FRONTEND_DIR), "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         try:
-            kwargs = {"cwd": str(FRONTEND_DIR), "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-            if sys.platform == "win32":
-                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             subprocess.Popen([npm, "run", "dev"], **kwargs)
             self.log_cb("前端服务已启动", "ok")
             self.step_cb("success", "start_frontend", "启动前端服务")
         except Exception as e:
-            self.log_cb(f"前端启动失败: {e}", "error")
-            self.step_cb("fail", "start_frontend", "启动前端服务", str(e))
-            return False
+            self.log_cb(f"前端启动失败: {e}，正在重试...", "warn")
+            try:
+                subprocess.Popen([npm, "run", "dev"], **kwargs)
+                self.log_cb("前端服务已启动（重试成功）", "ok")
+                self.step_cb("success", "start_frontend", "启动前端服务")
+            except Exception as e2:
+                self.log_cb(f"前端启动重试仍然失败: {e2}", "error")
+                self.step_cb("fail", "start_frontend", "启动前端服务", str(e2))
+                return False
 
         # --- step 6: 记下端口，由 GUI 询问用户后决定是否打开浏览器 ---
         self.step_cb("start", "open_browser", "打开浏览器")
