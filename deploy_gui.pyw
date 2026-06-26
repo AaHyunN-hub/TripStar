@@ -87,7 +87,7 @@ class DeployWorker:
         self.log_cb = log_callback
         self.ask_cb = ask_callback
         self._stop = threading.Event()
-        self._fe_real_url = "http://localhost:5173"
+        self._fe_real_url = "http://localhost:7860"
 
     def stop(self):
         self._stop.set()
@@ -359,17 +359,47 @@ class DeployWorker:
             self.step_cb("fail", "check_api_keys", "检查 API Key 配置",
                          "部分 Key 未配置，部分功能可能不可用")
 
-        # --- step 4: 启动后端 (带健康检查) ---
-        self.step_cb("start", "start_backend", "启动后端服务")
+        # --- step 4: Docker 一键启动 ---
+        self.step_cb("start", "start_backend", "启动 Docker 服务")
         port = self._get_backend_port()
-        self.log_cb(f"后端端口: {port}", "info")
+        self.log_cb(f"服务端口: {port}", "info")
 
-        # 检查端口是否被占用
-        port_status = self._check_port_or_ask(port, "后端")
-        if port_status == "cancelled":
-            self.step_cb("fail", "start_backend", "启动后端服务", "端口被占用，用户取消")
+        # 先检查 Docker 是否在运行
+        self.log_cb("检查 Docker 运行状态...", "info")
+        try:
+            docker_check = subprocess.run(
+                ["docker", "info"],
+                capture_output=True, text=True, timeout=10
+            )
+            if docker_check.returncode != 0:
+                self.log_cb("Docker 未运行，请先启动 Docker Desktop", "error")
+                self.step_cb("fail", "start_backend", "启动 Docker", "Docker 未运行")
+                return False
+        except FileNotFoundError:
+            self.log_cb("未找到 Docker，请先安装 Docker Desktop", "error")
+            self.step_cb("fail", "start_backend", "启动 Docker", "Docker 未安装")
             return False
-        be_skip = port_status == "ours"  # 自己的进程，跳过启动直接验证
+        except Exception as e:
+            self.log_cb(f"Docker 检查失败: {e}", "warn")
+
+        self.log_cb("正在通过 Docker 启动服务...", "info")
+        try:
+            result = subprocess.run(
+                ["docker-compose", "up", "-d"],
+                cwd=PROJECT_DIR,
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode == 0:
+                self.log_cb("Docker 容器已启动 ✓", "ok")
+            else:
+                self.log_cb(f"Docker 输出: {result.stderr[:200]}", "warn")
+        except Exception as e:
+            self.log_cb(f"Docker 启动失败: {e}", "error")
+            self.step_cb("fail", "start_backend", "启动 Docker", str(e))
+            return False
+
+        # 等待服务就绪
+        be_skip = False
 
         if sys.platform == "win32":
             venv_python = str(BACKEND_DIR / ".venv" / "Scripts" / "python.exe")
@@ -437,30 +467,32 @@ class DeployWorker:
                     self.step_cb("fail", "start_backend", "启动后端服务", str(e2))
                     return False
 
-        # --- step 5: 启动前端 (带健康检查) ---
-        self.step_cb("start", "start_frontend", "启动前端服务")
+        # --- step 5: 检查前端 (Docker 已包含前端) ---
+        self.step_cb("start", "start_frontend", "检查前端服务")
 
-        # 检查前端端口 5173 是否被占用
-        fe_status = self._check_port_or_ask(5173, "前端", prompt_ours=True)
+        # 检查前端端口 7860 是否可用
+        fe_status = self._check_port_or_ask(7860, "前端", prompt_ours=True)
         if fe_status == "cancelled":
-            self.step_cb("fail", "start_frontend", "启动前端服务", "端口被占用，用户取消")
+            self.step_cb("fail", "start_frontend", "检查前端服务", "端口被占用")
             return False
 
-        npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-        frontend_url = "http://127.0.0.1:5173"   # 健康检查用 127.0.0.1 避免 IPv6 问题
+        frontend_url = "http://127.0.0.1:7860"
 
-        fe_skip = fe_status == "ours"
-
-        if fe_skip:
-            if self._health_check(frontend_url):
-                self.log_cb("前端已在运行中 ✓", "ok")
-                self.step_cb("success", "start_frontend", "启动前端服务")
+        if self._health_check(frontend_url):
+            self.log_cb("前端服务已就绪 ✓", "ok")
+            self.step_cb("success", "start_frontend", "检查前端服务")
+        else:
+            self.log_cb("前端服务未就绪，等待中...", "warn")
+            for i in range(30):
+                time.sleep(2)
+                if self._health_check(frontend_url):
+                    self.log_cb(f"前端服务已就绪 ✓ (耗时 {i*2+2}s)", "ok")
+                    self.step_cb("success", "start_frontend", "检查前端服务")
+                    break
             else:
-                self.log_cb("前端进程存在但无法访问，尝试重新启动...", "warn")
-                fe_skip = False
-
-        if not fe_skip:
-            # 前端输出写入日志文件
+                self.log_cb("前端服务启动超时", "error")
+                self.step_cb("fail", "start_frontend", "检查前端服务", "超时")
+                return False
             frontend_log = PROJECT_DIR / "frontend_startup.log"
             # 禁用颜色参数，防止 Node.js v24+ 自动传入 --color
             fe_env = os.environ.copy()
@@ -660,7 +692,7 @@ class DeployWorker:
                     return int(m.group(1))
             except Exception:
                 pass
-        return 8000
+        return 7860
 
     def _find_process_by_port(self, port):
         """查找占用端口的进程，返回 (pid, 名称, 是否为本项目进程) 或 None"""
@@ -1178,7 +1210,7 @@ class DeployGUI:
 
         self._services_started = False
         self._monitor_job = None
-        self._fe_monitor_url = "http://127.0.0.1:5173"
+        self._fe_monitor_url = "http://127.0.0.1:7860"
 
     def _mkbtn(self, parent, text, color, hover_color, command,
                font_size=12, padx=18, pady=9):
@@ -1320,7 +1352,7 @@ class DeployGUI:
                     self.root.after(0, self._ask_deploy)
                 elif isinstance(result, tuple) and result[0] == "started":
                     port = result[1]
-                    fe_url = result[2] if len(result) >= 3 else "http://localhost:5173"
+                    fe_url = result[2] if len(result) >= 3 else "http://localhost:7860"
                     self._fe_monitor_url = fe_url
                     self._msg_queue.put(("status", (
                         f"✅ 服务已启动！前端: {fe_url}", "success")))
@@ -1346,7 +1378,7 @@ class DeployGUI:
         event.wait()
         return result_box[0]
 
-    def _ask_browser(self, port, fe_url="http://localhost:5173"):
+    def _ask_browser(self, port, fe_url="http://localhost:7860"):
         """询问是否启动浏览器"""
         answer = messagebox.askyesno(
             "启动浏览器",
@@ -1451,7 +1483,7 @@ class DeployGUI:
             return
 
         def _check():
-            be_alive = self._http_ok("http://127.0.0.1:8000/docs")
+            be_alive = self._http_ok("http://127.0.0.1:7860/docs")
             fe_alive = self._http_ok(self._fe_monitor_url)
             self._msg_queue.put(("svc_status", (be_alive, fe_alive)))
 
