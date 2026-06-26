@@ -6,13 +6,39 @@ D:\TripStar AI旅行智能体\TripStar\backend\app\api\routes\map.py:25: FastAPI
 D:\TripStar AI旅行智能体\TripStar\backend\app\api\routes\map.py:67: FastAPIDeprecationWarning: `example` has been deprecated, please use `examples` instead
   city: str = Query(..., description="城市名称", example="北京")
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process [256500] using WatchFiles
+INFO:     Started reloader process [296864] using WatchFiles
 D:\TripStar AI旅行智能体\TripStar\backend\app\api\routes\map.py:24: FastAPIDeprecationWarning: `example` has been deprecated, please use `examples` instead
   keywords: str = Query(..., description="搜索关键词", example="故宫"),
 D:\TripStar AI旅行智能体\TripStar\backend\app\api\routes\map.py:25: FastAPIDeprecationWarning: `example` has been deprecated, please use `examples` instead
   city: str = Query(..., description="城市", example="北京"),
 D:\TripStar AI旅行智能体\TripStar\backend\app\api\routes\map.py:67: FastAPIDeprecationWarning: `example` has been deprecated, please use `examples` instead
   city: str = Query(..., description="城市名称", example="北京")
-INFO:     Started server process [221528]
+INFO:     Started server process [248432]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
+📦 已加载 7 个持久化旅行任务
+
+============================================================
+🚀 HelloAgents智能旅行助手 v2.0.0
+============================================================
+应用名称: HelloAgents智能旅行助手
+版本: 2.0.0
+服务器: 0.0.0.0:8000
+高德地图API Key: 已配置
+高德地图JS Key: 未配置
+Google Maps API Key: 未配置
+Google Maps Proxy: 未配置
+小红书Cookie: 已配置
+LLM API Key: 已配置
+LLM Base URL: https://ark.cn-beijing.volces.com/api/v3
+LLM Model: ep-20260402174336-j4947
+日志级别: INFO
+
+✅ 配置验证通过
+
+============================================================
+📚 API文档: http://localhost:8000/docs
+📖 ReDoc文档: http://localhost:8000/redoc
+============================================================
+
+INFO:     127.0.0.1:53641 - "GET /api/trip/history?limit=8 HTTP/1.1" 200 OK

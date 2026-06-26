@@ -780,19 +780,26 @@ class DeployWorker:
         return f"缺失: {', '.join(missing)}" if missing else "请先部署项目"
 
     def _health_check(self, url, timeout=2):
-        """HTTP 健康检查 — 尝试 GET 指定 URL"""
+        """检测服务是否可访问 — 先 TCP 端口检测，失败后回退 HTTP"""
         import urllib.request
-        import urllib.error
-        try:
-            req = urllib.request.Request(url, method="HEAD")
-            urllib.request.urlopen(req, timeout=timeout)
-            return True
-        except Exception:
+        # 从 URL 提取 host:port
+        m = re.match(r'https?://([^:/]+)(?::(\d+))?', url)
+        if m:
+            host = m.group(1)
+            port = int(m.group(2)) if m.group(2) else (443 if url.startswith("https") else 80)
+            import socket
             try:
-                urllib.request.urlopen(url, timeout=timeout)
+                s = socket.create_connection((host, port), timeout=timeout)
+                s.close()
                 return True
             except Exception:
-                return False
+                pass  # TCP 失败，尝试 HTTP
+        # HTTP 回退
+        try:
+            urllib.request.urlopen(url, timeout=timeout)
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def _parse_vite_url(log_path):
@@ -1417,13 +1424,20 @@ class DeployGUI:
 
     @staticmethod
     def _http_ok(url):
-        """快速检查 URL 是否可访问（超时 2 秒）"""
-        import urllib.request
-        try:
-            urllib.request.urlopen(url, timeout=2)
-            return True
-        except Exception:
-            return False
+        """快速检查服务是否可访问 — TCP 端口检测（超时 2 秒）"""
+        import socket
+        import re
+        m = re.match(r'https?://([^:/]+)(?::(\d+))?', url)
+        if m:
+            host = m.group(1)
+            port = int(m.group(2)) if m.group(2) else (443 if url.startswith("https") else 80)
+            try:
+                s = socket.create_connection((host, port), timeout=2)
+                s.close()
+                return True
+            except Exception:
+                return False
+        return False
 
     def _update_service_indicators(self, be_alive, fe_alive):
         """更新指示灯颜色"""
