@@ -309,7 +309,40 @@ class DeployWorker:
 
     # ---------- 启动 ----------
     def start(self):
-        # --- step 1: 检查后端 ---
+        """Docker 一键启动（保留步骤流程）"""
+        port = self._get_backend_port()
+        frontend_url = f"http://localhost:{port}"
+
+        # --- step 1: 检查后端部署状态 ---
+        self.step_cb("start", "check_backend", "检查后端部署状态")
+        front_ok = True
+        checks_f = [
+            (FRONTEND_DIR / "node_modules",  "前端依赖"),
+            (FRONTEND_DIR / ".env",          "前端配置文件"),
+        ]
+        for path, desc in checks_f:
+            if path.exists():
+                self.log_cb(f"  ✓ {desc}", "ok")
+            else:
+                self.log_cb(f"  ✗ {desc} 未找到", "error")
+                front_ok = False
+        if front_ok:
+            self.step_cb("success", "check_frontend", "检查前端部署状态")
+        else:
+            self.step_cb("fail", "check_frontend", "检查前端部署状态",
+                         "前端依赖不完整，请先部署")
+            return False
+
+        # --- step 3: 检查 API Key ---
+        self.step_cb("start", "check_api_keys", "检查 API Key 配置")
+        key_ok = self._check_env_keys_impl()
+        if key_ok:
+            self.step_cb("success", "check_api_keys", "检查 API Key 配置")
+        else:
+            self.step_cb("fail", "check_api_keys", "检查 API Key 配置",
+                         "部分 Key 未配置，部分功能可能不可用")
+
+        # --- step 4: 检查后端部署状态 ---
         self.step_cb("start", "check_backend", "检查后端部署状态")
         backend_ok = True
         checks_b = [
@@ -326,247 +359,76 @@ class DeployWorker:
         if backend_ok:
             self.step_cb("success", "check_backend", "检查后端部署状态")
         else:
-            detail = self._missing_hint([p for p, _ in checks_b])
-            self.step_cb("fail", "check_backend", "检查后端部署状态", detail)
-            return "need_deploy"
-
-        # --- step 2: 检查前端 ---
-        self.step_cb("start", "check_frontend", "检查前端部署状态")
-        front_ok = True
-        checks_f = [
-            (FRONTEND_DIR / "node_modules",  "前端依赖"),
-            (FRONTEND_DIR / ".env",          "前端配置文件"),
-        ]
-        for path, desc in checks_f:
-            if path.exists():
-                self.log_cb(f"  ✓ {desc}", "ok")
-            else:
-                self.log_cb(f"  ✗ {desc} 未找到", "error")
-                front_ok = False
-        if front_ok:
-            self.step_cb("success", "check_frontend", "检查前端部署状态")
-        else:
-            detail = self._missing_hint([p for p, _ in checks_f])
-            self.step_cb("fail", "check_frontend", "检查前端部署状态", detail)
-            return "need_deploy"
-
-        # --- step 3: 检查 API Key ---
-        self.step_cb("start", "check_api_keys", "检查 API Key 配置")
-        key_ok = self._check_env_keys_impl()
-        if key_ok:
-            self.step_cb("success", "check_api_keys", "检查 API Key 配置")
-        else:
-            self.step_cb("fail", "check_api_keys", "检查 API Key 配置",
-                         "部分 Key 未配置，部分功能可能不可用")
-
-        # --- step 4: Docker 一键启动 ---
-        self.step_cb("start", "start_backend", "启动 Docker 服务")
-        port = self._get_backend_port()
-        self.log_cb(f"服务端口: {port}", "info")
-
-        # 先检查 Docker 是否在运行
-        self.log_cb("检查 Docker 运行状态...", "info")
-        try:
-            docker_check = subprocess.run(
-                ["docker", "info"],
-                capture_output=True, text=True, timeout=10
-            )
-            if docker_check.returncode != 0:
-                self.log_cb("Docker 未运行，请先启动 Docker Desktop", "error")
-                self.step_cb("fail", "start_backend", "启动 Docker", "Docker 未运行")
-                return False
-        except FileNotFoundError:
-            self.log_cb("未找到 Docker，请先安装 Docker Desktop", "error")
-            self.step_cb("fail", "start_backend", "启动 Docker", "Docker 未安装")
-            return False
-        except Exception as e:
-            self.log_cb(f"Docker 检查失败: {e}", "warn")
-
-        self.log_cb("正在通过 Docker 启动服务...", "info")
-        try:
-            result = subprocess.run(
-                ["docker-compose", "up", "-d"],
-                cwd=PROJECT_DIR,
-                capture_output=True, text=True, timeout=120
-            )
-            if result.returncode == 0:
-                self.log_cb("Docker 容器已启动 ✓", "ok")
-            else:
-                self.log_cb(f"Docker 输出: {result.stderr[:200]}", "warn")
-        except Exception as e:
-            self.log_cb(f"Docker 启动失败: {e}", "error")
-            self.step_cb("fail", "start_backend", "启动 Docker", str(e))
+            self.step_cb("fail", "check_backend", "检查后端部署状态",
+                         "后端依赖不完整，请先部署")
             return False
 
-        # 等待服务就绪
-        be_skip = False
+        # --- step 5: 检查 Docker 环境 ---
+        self.step_cb("start", "start_backend", "检查 Docker 环境")
+        docker_ok = False
+        try:
+            r = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
+            docker_ok = r.returncode == 0
+        except Exception:
+            pass
 
-        if sys.platform == "win32":
-            venv_python = str(BACKEND_DIR / ".venv" / "Scripts" / "python.exe")
+        if docker_ok:
+            self.log_cb("  ✓ Docker 运行正常", "ok")
+            self.step_cb("success", "check_backend", "检查 Docker 环境")
         else:
-            venv_python = str(BACKEND_DIR / ".venv" / "bin" / "python")
-        backend_cmd = [
-            venv_python, "-m", "uvicorn", "app.api.main:app",
-            "--host", "0.0.0.0", "--port", str(port), "--reload",
-        ]
+            self.log_cb("  ✗ Docker 未运行，请先打开 Docker Desktop", "error")
+            self.step_cb("fail", "check_backend", "检查 Docker 环境", "Docker 未运行")
+            return False
 
-        backend_url = f"http://127.0.0.1:{port}/docs"   # 127.0.0.1 避免 IPv6 解析问题
-
-        if be_skip:
-            # 本项目自己的进程已在运行，直接验证
-            if self._health_check(backend_url):
-                self.log_cb("后端已在运行中 ✓", "ok")
-                self.step_cb("success", "start_backend", "启动后端服务")
-            else:
-                self.log_cb("后端进程存在但无法访问，尝试重新启动...", "warn")
-                be_skip = False  # 降级为重新启动
-
-        if not be_skip:
-            # 后端输出写入日志文件，便于排查
-            backend_log = PROJECT_DIR / "backend_startup.log"
-            kwargs = {"cwd": str(BACKEND_DIR),
-                      "stdout": open(backend_log, "w", encoding="utf-8"),
-                      "stderr": subprocess.STDOUT}
-            self._backend_proc = None
+        # --- step 2: 检查容器状态 ---
+        self.step_cb("start", "start_backend", "检查容器状态")
+        import urllib.request
+        try:
+            urllib.request.urlopen("http://127.0.0.1:7860/health", timeout=2)
+            self.log_cb("  ✓ 容器已在运行", "ok")
+            self.step_cb("success", "start_backend", "检查容器状态")
+        except Exception:
+            self.log_cb("  → 容器未运行，正在启动...", "warn")
             try:
-                self._backend_proc = _popen(backend_cmd, **kwargs)
-                self.log_cb("后端进程已启动，等待就绪...", "info")
-
-                # 健康检查：最多等 15 秒
-                for i in range(15):
-                    time.sleep(1)
-                    if self._health_check(backend_url):
-                        self.log_cb(f"后端服务已就绪 ✓ (耗时 {i+1}s)", "ok")
-                        self.step_cb("success", "start_backend", "启动后端服务")
-                        break
+                result = subprocess.run(
+                    ["docker-compose", "up", "-d"],
+                    cwd=PROJECT_DIR, capture_output=True, text=True, timeout=120
+                )
+                if result.returncode == 0:
+                    self.log_cb("  ✓ Docker 容器已启动", "ok")
                 else:
-                    # 超时 — 检查进程是否已崩溃
-                    exit_code = self._backend_proc.poll()
-                    if exit_code is not None:
-                        self.log_cb(f"后端进程已退出 (退出码: {exit_code})", "error")
-                        self._show_log_tail(backend_log, "后端启动日志")
-                    else:
-                        self.log_cb("后端进程运行中但无法访问，可能启动较慢", "warn")
-                        self.log_cb("请稍后手动刷新页面", "warn")
-                    self.step_cb("fail", "start_backend", "启动后端服务", "服务未就绪")
-                    return False
+                    self.log_cb(f"  ⚠ Docker 输出: {result.stderr[:200]}", "warn")
+                self.step_cb("success", "start_backend", "检查容器状态")
             except Exception as e:
-                self.log_cb(f"后端启动失败: {e}，正在重试...", "warn")
-                try:
-                    self._backend_proc = _popen(backend_cmd, **kwargs)
-                    time.sleep(5)
-                    if self._health_check(backend_url):
-                        self.log_cb("后端服务已就绪（重试成功）", "ok")
-                        self.step_cb("success", "start_backend", "启动后端服务")
-                    else:
-                        self.log_cb("后端服务重试后仍未就绪", "error")
-                        self.step_cb("fail", "start_backend", "启动后端服务", str(e))
-                        return False
-                except Exception as e2:
-                    self.log_cb(f"后端启动重试仍然失败: {e2}", "error")
-                    self.step_cb("fail", "start_backend", "启动后端服务", str(e2))
-                    return False
+                self.log_cb(f"  ✗ Docker 启动失败: {e}", "error")
+                self.step_cb("fail", "start_backend", "检查容器状态", str(e))
+                return False
 
-        # --- step 5: 检查前端 (Docker 已包含前端) ---
-        self.step_cb("start", "start_frontend", "检查前端服务")
-
-        # 检查前端端口 7860 是否可用
-        fe_status = self._check_port_or_ask(7860, "前端", prompt_ours=True)
-        if fe_status == "cancelled":
-            self.step_cb("fail", "start_frontend", "检查前端服务", "端口被占用")
-            return False
-
-        frontend_url = "http://127.0.0.1:7860"
-
-        if self._health_check(frontend_url):
-            self.log_cb("前端服务已就绪 ✓", "ok")
-            self.step_cb("success", "start_frontend", "检查前端服务")
-        else:
-            self.log_cb("前端服务未就绪，等待中...", "warn")
-            for i in range(30):
+        # --- step 3: 等待服务就绪 ---
+        self.step_cb("start", "start_frontend", "等待服务就绪")
+        ready = False
+        for i in range(30):
+            try:
+                urllib.request.urlopen("http://127.0.0.1:7860/health", timeout=2)
+                ready = True
+                break
+            except Exception:
+                if i % 5 == 0:
+                    self.log_cb(f"  等待服务就绪... ({i*2+2}s)", "info")
                 time.sleep(2)
-                if self._health_check(frontend_url):
-                    self.log_cb(f"前端服务已就绪 ✓ (耗时 {i*2+2}s)", "ok")
-                    self.step_cb("success", "start_frontend", "检查前端服务")
-                    break
-            else:
-                self.log_cb("前端服务启动超时", "error")
-                self.step_cb("fail", "start_frontend", "检查前端服务", "超时")
-                return False
-            frontend_log = PROJECT_DIR / "frontend_startup.log"
-            # 禁用颜色参数，防止 Node.js v24+ 自动传入 --color
-            fe_env = os.environ.copy()
-            fe_env["NO_COLOR"] = "1"
-            fe_env["FORCE_COLOR"] = "0"
-            kwargs = {"cwd": str(FRONTEND_DIR),
-                      "stdout": open(frontend_log, "w", encoding="utf-8"),
-                      "stderr": subprocess.STDOUT,
-                      "env": fe_env}
-            self._frontend_proc = None
-            try:
-                self._frontend_proc = _popen([npm_cmd, "run", "dev"], **kwargs)
-                self.log_cb("前端进程已启动，等待就绪...", "info")
+        if ready:
+            self.log_cb("  ✓ 服务已就绪", "ok")
+            self.step_cb("success", "start_frontend", "等待服务就绪")
+        else:
+            self.log_cb("  ✗ 服务启动超时", "error")
+            self.step_cb("fail", "start_frontend", "等待服务就绪", "超时")
+            return False
 
-                # 健康检查：最多等 20 秒 (Vite 首次启动较慢)
-                for i in range(20):
-                    time.sleep(1)
-                    if self._health_check(frontend_url, timeout=2):
-                        self.log_cb(f"前端服务已就绪 ✓ (耗时 {i+1}s)", "ok")
-                        self.step_cb("success", "start_frontend", "启动前端服务")
-                        break
-                else:
-                    exit_code = self._frontend_proc.poll()
-                    if exit_code is not None:
-                        self.log_cb(f"前端进程已退出 (退出码: {exit_code})", "error")
-                        self._show_log_tail(frontend_log, "前端启动日志")
-                        self.step_cb("fail", "start_frontend", "启动前端服务", "Vite 已退出")
-                        return False
-                    else:
-                        # 从 Vite 日志中解析实际运行的端口
-                        self.log_cb("正在从启动日志中解析端口...", "info")
-                        real_url = self._parse_vite_url(frontend_log)
-                        if real_url:
-                            self.log_cb(f"检测到 Vite 实际运行地址: {real_url}", "ok")
-                            if self._health_check(real_url, timeout=2):
-                                self.log_cb(f"前端服务已就绪 ✓", "ok")
-                                # 更新前端 URL 供后续步骤使用
-                                self._fe_real_url = real_url
-                                self.step_cb("success", "start_frontend", "启动前端服务")
-                            else:
-                                self.log_cb(f"Vite 日志显示 {real_url} 但无法访问", "error")
-                                self._show_log_tail(frontend_log, "Vite 启动日志")
-                                self.step_cb("fail", "start_frontend", "启动前端服务",
-                                             f"Vite 在 {real_url} 但无法访问")
-                                return False
-                        else:
-                            self._show_log_tail(frontend_log, "Vite 启动日志")
-                            self.step_cb("fail", "start_frontend", "启动前端服务",
-                                         "Vite 未就绪")
-                            return False
-            except Exception as e:
-                self.log_cb(f"前端启动失败: {e}，正在重试...", "warn")
-                try:
-                    self._frontend_proc = _popen([npm_cmd, "run", "dev"], **kwargs)
-                    time.sleep(10)
-                    if self._health_check(frontend_url):
-                        self.log_cb("前端服务已就绪（重试成功）", "ok")
-                        self.step_cb("success", "start_frontend", "启动前端服务")
-                    else:
-                        self.log_cb("前端服务重试后仍未就绪", "error")
-                        self.step_cb("fail", "start_frontend", "启动前端服务", str(e))
-                        return False
-                except Exception as e2:
-                    self.log_cb(f"前端启动重试仍然失败: {e2}", "error")
-                    self.step_cb("fail", "start_frontend", "启动前端服务", str(e2))
-                    return False
-
-        # --- step 6: 记下端口，由 GUI 询问用户后决定是否打开浏览器 ---
+        # --- step 4: 打开浏览器 ---
         self.step_cb("start", "open_browser", "打开浏览器")
-        fe_url = getattr(self, "_fe_real_url", "http://localhost:5173")
-        self.log_cb(f"前端地址: {fe_url}", "ok")
-        self.log_cb(f"后端文档: http://localhost:{port}/docs", "ok")
-        # 把前端实际 URL 带回 GUI
-        return ("started", port, fe_url)
+        self.log_cb(f"  前端地址: {frontend_url}", "ok")
+        self.log_cb(f"  后端文档: {frontend_url}/docs", "ok")
+        return ("started", port, frontend_url)
 
     # ---------- 内部辅助 ----------
     def _check_env_impl(self):
